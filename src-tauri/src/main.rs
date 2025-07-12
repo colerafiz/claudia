@@ -35,6 +35,7 @@ use commands::mcp::{
     mcp_serve, mcp_test_connection,
 };
 
+use commands::issues::list_issues;
 use commands::usage::{
     get_session_stats, get_usage_by_date_range, get_usage_details, get_usage_stats,
 };
@@ -190,6 +191,9 @@ fn main() {
             storage_insert_row,
             storage_execute_sql,
             storage_reset_database,
+            
+            // Issues
+            list_issues,
             
             // Slash Commands
             commands::slash_commands::slash_commands_list,

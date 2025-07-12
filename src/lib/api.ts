@@ -73,6 +73,15 @@ export interface ClaudeVersionStatus {
 /**
  * Represents a CLAUDE.md file found in the project
  */
+export interface Issue {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed";
+  labels: string[];
+}
+
 export interface ClaudeMdFile {
   /** Relative path from the project root */
   relative_path: string;
@@ -652,6 +661,15 @@ export const api = {
    * Lists all CC agents
    * @returns Promise resolving to an array of agents
    */
+  async listIssues(): Promise<Issue[]> {
+    try {
+      return await invoke<Issue[]>("list_issues");
+    } catch (error) {
+      console.error("Failed to list issues:", error);
+      throw error;
+    }
+  },
+
   async listAgents(): Promise<Agent[]> {
     try {
       return await invoke<Agent[]>('list_agents');
