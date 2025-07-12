@@ -35,3 +35,6 @@ CLAUDE.md
 
 # Claude project-specific files
 .claude/
+
+# Git worktrees for feature development
+*-worktrees/

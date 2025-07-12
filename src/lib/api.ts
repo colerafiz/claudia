@@ -29,6 +29,8 @@ export interface Project {
   sessions: string[];
   /** Unix timestamp when the project directory was created */
   created_at: number;
+  /** Whether the project directory is a git repository */
+  is_git_repo?: boolean;
 }
 
 /**

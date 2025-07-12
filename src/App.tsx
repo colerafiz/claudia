@@ -272,7 +272,6 @@ function App() {
                     </div>
                   </Card>
                 </motion.div>
-                
 
               </div>
             </div>

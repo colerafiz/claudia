@@ -2334,6 +2334,8 @@ pub struct FeatureExecutionRequest {
 pub struct FeatureExecutionResult {
     pub branch_names: Vec<String>,
     pub run_ids: Vec<i64>,
+    pub issue_number: Option<String>,
+    pub issue_url: Option<String>,
 }
 
 /// Helper function to get the actual claude binary path for terminal execution
@@ -2407,6 +2409,26 @@ pub async fn execute_feature(
     let current_branch = String::from_utf8_lossy(&current_branch_output.stdout).trim().to_string();
     info!("Current branch: {}", current_branch);
     
+    // Pull latest changes to ensure we're up to date
+    let _ = app.emit("feature-status", serde_json::json!({
+        "status": "updating",
+        "message": "Pulling latest changes..."
+    }));
+    
+    let pull_result = std::process::Command::new("git")
+        .args(&["pull"])
+        .current_dir(&request.directory)
+        .output()
+        .map_err(|e| format!("Failed to pull latest changes: {}", e))?;
+    
+    if !pull_result.status.success() {
+        let stderr = String::from_utf8_lossy(&pull_result.stderr);
+        warn!("Git pull failed or had conflicts: {}", stderr);
+        // Continue anyway - user might be on a different branch or have local changes
+    } else {
+        info!("Successfully pulled latest changes");
+    }
+    
     // First, create a GitHub issue with implementation plan using Claude
     let _ = app.emit("feature-status", serde_json::json!({
         "status": "creating_issue",
@@ -2438,15 +2460,31 @@ pub async fn execute_feature(
         .args(&[
             "-p", &issue_prompt,
             "--model", "claude-3-5-sonnet-20241022",
-            "--output-format", "stream-json",
             "--dangerously-skip-permissions"
         ])
         .output()
         .await
         .map_err(|e| format!("Failed to create GitHub issue: {}", e))?;
     
+    // Extract issue number from output
+    let mut issue_number = None;
+    let mut issue_url = None;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    // Look for GitHub issue URL in either stdout or stderr
+    let issue_url_regex = regex::Regex::new(r"https://github\.com/[^/]+/[^/]+/issues/(\d+)").unwrap();
+    
+    for text in &[&stdout, &stderr] {
+        if let Some(captures) = issue_url_regex.captures(text) {
+            issue_number = captures.get(1).map(|m| m.as_str().to_string());
+            issue_url = captures.get(0).map(|m| m.as_str().to_string());
+            break;
+        }
+    }
+    
     let issue_success = if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         warn!("GitHub issue creation may have failed: {}", stderr);
         false
     } else {
@@ -2457,40 +2495,86 @@ pub async fn execute_feature(
         warn!("GitHub issue creation may have failed");
     }
     
+    if let Some(ref url) = issue_url {
+        info!("Created GitHub issue: {}", url);
+    }
+    
     let _ = app.emit("feature-status", serde_json::json!({
         "status": "issue_created",
-        "message": "GitHub issue created. Preparing to spawn agents..."
+        "message": if let Some(ref url) = issue_url {
+            format!("GitHub issue created: {}", url)
+        } else {
+            "GitHub issue created. Preparing to spawn agents...".to_string()
+        }
     }));
     
     let mut branch_names = Vec::new();
     let mut run_ids = Vec::new();
+    let mut worktree_paths = Vec::new();
     
-    // Create branches and spawn terminal windows with Claude
+    // Create a base directory for worktrees (sibling to the main project)
+    let project_path = std::path::Path::new(&request.directory);
+    let project_name = project_path.file_name()
+        .ok_or("Invalid project directory")?
+        .to_string_lossy();
+    let parent_dir = project_path.parent()
+        .ok_or("Project directory has no parent")?;
+    let worktrees_base = parent_dir.join(format!("{}-worktrees", project_name));
+    
+    // Create the worktrees base directory if it doesn't exist
+    if !worktrees_base.exists() {
+        std::fs::create_dir_all(&worktrees_base)
+            .map_err(|e| format!("Failed to create worktrees directory: {}", e))?;
+        info!("Created worktrees base directory: {:?}", worktrees_base);
+    }
+    
+    // Create branches and worktrees for each agent
     for i in 0..request.agent_count {
         let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         let branch_name = format!("feature-agent-{}-{}", i + 1, timestamp);
         
-        // Create and checkout new branch
-        let create_branch_result = std::process::Command::new("git")
-            .args(&["checkout", "-b", &branch_name])
+        // Create a more descriptive worktree name with issue number if available
+        let worktree_name = if let Some(ref issue_num) = issue_number {
+            format!("issue-{}-agent-{}-{}", issue_num, i + 1, timestamp)
+        } else {
+            format!("agent-{}-{}", i + 1, timestamp)
+        };
+        let worktree_path = worktrees_base.join(&worktree_name);
+        
+        // Create worktree with new branch
+        let create_worktree_result = std::process::Command::new("git")
+            .args(&["worktree", "add", "-b", &branch_name, worktree_path.to_str().unwrap()])
             .current_dir(&request.directory)
             .output()
-            .map_err(|e| format!("Failed to create branch {}: {}", branch_name, e))?;
+            .map_err(|e| format!("Failed to create worktree for branch {}: {}", branch_name, e))?;
         
-        if !create_branch_result.status.success() {
-            let stderr = String::from_utf8_lossy(&create_branch_result.stderr);
-            return Err(format!("Failed to create branch {}: {}", branch_name, stderr));
+        if !create_worktree_result.status.success() {
+            let stderr = String::from_utf8_lossy(&create_worktree_result.stderr);
+            return Err(format!("Failed to create worktree for branch {}: {}", branch_name, stderr));
         }
         
-        info!("Created branch: {}", branch_name);
+        info!("Created worktree at {:?} for branch: {}", worktree_path, branch_name);
         branch_names.push(branch_name.clone());
+        worktree_paths.push(worktree_path.clone());
         
         // Prepare the task for this agent
-        let task_prompt = format!(
-            "You are working on branch '{}'. {}\\n\\nIMPORTANT: Do not switch branches. Work only on the current branch. When you have completed the implementation, create a pull request to merge your branch into the main branch.",
-            branch_name,
-            request.ticket
-        );
+        let task_prompt = if let Some(ref issue_num) = issue_number {
+            format!(
+                "You are working on branch '{}' for GitHub issue #{}. {}\\n\\nIMPORTANT: Do not switch branches. Work only on the current branch. When you have completed the implementation, create a pull request to merge your branch into the main branch. The PR title should be: 'Fix #{}: [Brief Description] - Agent {}'",
+                branch_name,
+                issue_num,
+                request.ticket,
+                issue_num,
+                i + 1
+            )
+        } else {
+            format!(
+                "You are working on branch '{}'. {}\\n\\nIMPORTANT: Do not switch branches. Work only on the current branch. When you have completed the implementation, create a pull request to merge your branch into the main branch. The PR title should include 'Agent {}' to identify which agent created it.",
+                branch_name,
+                request.ticket,
+                i + 1
+            )
+        };
         
         // Open terminal window with Claude
         #[cfg(target_os = "macos")]
@@ -2498,14 +2582,14 @@ pub async fn execute_feature(
             // Use the actual claude binary path for terminal commands
             let claude_cmd = get_claude_terminal_command(&app, &claude_binary);
             
-            // Properly escape for AppleScript
-            let escaped_dir = request.directory.replace("\\", "\\\\").replace("\"", "\\\"");
+            // Properly escape for AppleScript - use worktree path
+            let escaped_dir = worktree_path.to_string_lossy().replace("\\", "\\\\").replace("\"", "\\\"");
             let escaped_cmd = claude_cmd.replace("\\", "\\\\").replace("\"", "\\\"");
             let escaped_task = task_prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ");
             
             let terminal_script = format!(
                 r#"tell application "Terminal"
-                    do script "cd \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions"
+                    do script "cd \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --dangerously-skip-permissions"
                     activate
                 end tell"#,
                 escaped_dir,
@@ -2535,8 +2619,8 @@ pub async fn execute_feature(
                     .arg("bash")
                     .arg("-c")
                     .arg(&format!(
-                        "cd '{}' && '{}' -p '{}' --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions; exec bash",
-                        request.directory,
+                        "cd '{}' && '{}' -p '{}' --model claude-3-5-sonnet-20241022 --dangerously-skip-permissions; exec bash",
+                        worktree_path.to_string_lossy(),
                         claude_cmd,
                         task_prompt
                     ))
@@ -2560,8 +2644,8 @@ pub async fn execute_feature(
             
             let _ = std::process::Command::new("cmd")
                 .args(&["/c", "start", "cmd", "/k", &format!(
-                    "cd /d \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions",
-                    request.directory,
+                    "cd /d \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --dangerously-skip-permissions",
+                    worktree_path.to_string_lossy(),
                     claude_cmd,
                     task_prompt
                 )])
@@ -2602,5 +2686,7 @@ pub async fn execute_feature(
     Ok(FeatureExecutionResult {
         branch_names,
         run_ids,
+        issue_number,
+        issue_url,
     })
 }

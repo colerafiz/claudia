@@ -37,6 +37,9 @@ pub struct Project {
     pub sessions: Vec<String>,
     /// Unix timestamp when the project directory was created
     pub created_at: u64,
+    /// Whether the project directory is a git repository
+    #[serde(default)]
+    pub is_git_repo: bool,
 }
 
 /// Represents a session with its metadata
@@ -360,6 +363,9 @@ pub async fn list_projects() -> Result<Vec<Project>, String> {
                     decode_project_path(dir_name)
                 }
             };
+            
+            // Check if it's a git repository
+            let is_git_repo = std::path::Path::new(&project_path).join(".git").exists();
 
             // List all JSONL files (sessions) in this project directory
             let mut sessions = Vec::new();
@@ -382,6 +388,7 @@ pub async fn list_projects() -> Result<Vec<Project>, String> {
                 path: project_path,
                 sessions,
                 created_at,
+                is_git_repo,
             });
         }
     }

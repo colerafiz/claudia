@@ -3,13 +3,14 @@ import { motion } from "framer-motion";
 import { ArrowLeft, FolderOpen, Play, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { api, type Project } from "@/lib/api";
 
 interface FeatureProps {
   onBack: () => void;
@@ -32,6 +33,37 @@ export function Feature({ onBack }: FeatureProps) {
     message: string;
   } | null>(null);
   const [expectedAgentCount, setExpectedAgentCount] = useState(0);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+
+  // Load projects on component mount
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  const loadProjects = async () => {
+    try {
+      setLoadingProjects(true);
+      const projectList = await api.listProjects();
+      
+      // Filter to only show git repositories and exclude worktree directories
+      const filteredProjects = projectList.filter(project => {
+        // Exclude paths that look like worktree directories
+        if (project.path.includes('-worktrees/') || project.path.match(/\/issue-\d+-agent-\d+/)) {
+          return false;
+        }
+        
+        // Only include projects that are git repositories
+        return project.is_git_repo ?? true; // Default to true for backward compatibility
+      });
+      
+      setProjects(filteredProjects);
+    } catch (error) {
+      console.error("Failed to load projects:", error);
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
 
   const handleSelectDirectory = async () => {
     try {
@@ -68,6 +100,8 @@ export function Feature({ onBack }: FeatureProps) {
       const result = await invoke<{
         branch_names: string[];
         run_ids: number[];
+        issue_number?: string;
+        issue_url?: string;
       }>("execute_feature", {
         request: {
           directory,
@@ -77,6 +111,14 @@ export function Feature({ onBack }: FeatureProps) {
       });
       
       console.log("Feature execution started:", result);
+      
+      // Update status with issue URL if available
+      if (result.issue_url) {
+        setFeatureStatus({
+          status: "issue_created",
+          message: `GitHub issue created: ${result.issue_url}`
+        });
+      }
       
       // Keep isExecuting true until all agents are done
       // The UI will show the progress
@@ -105,6 +147,12 @@ export function Feature({ onBack }: FeatureProps) {
       }>("feature-agent-started", (event) => {
         console.log("Agent started:", event.payload);
         setRunningAgents(prev => {
+          // Check if agent with same run_id already exists
+          const exists = prev.some(agent => agent.run_id === event.payload.run_id);
+          if (exists) {
+            return prev; // Don't add duplicate
+          }
+          
           const updated = [...prev, event.payload];
           
           // Check if all expected agents have been spawned
@@ -178,25 +226,54 @@ export function Feature({ onBack }: FeatureProps) {
               <div className="space-y-2">
                 <Label htmlFor="directory">Project Directory</Label>
                 <div className="flex gap-2">
-                  <Input
-                    id="directory"
+                  <Select
                     value={directory}
-                    onChange={(e) => setDirectory(e.target.value)}
-                    placeholder="Select or enter project directory"
-                    className="flex-1"
-                    disabled={isExecuting}
-                  />
+                    onValueChange={(value) => {
+                      if (value === "__browse__") {
+                        handleSelectDirectory();
+                      } else {
+                        setDirectory(value);
+                      }
+                    }}
+                    disabled={isExecuting || loadingProjects}
+                  >
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder={loadingProjects ? "Loading projects..." : "Select a recent project or browse..."} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {projects.length > 0 && (
+                        <>
+                          {projects.map((project) => (
+                            <SelectItem key={project.id} value={project.path}>
+                              {project.path}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="__browse__" className="text-muted-foreground">
+                            <FolderOpen className="h-4 w-4 mr-2 inline" />
+                            Browse for directory...
+                          </SelectItem>
+                        </>
+                      )}
+                      {projects.length === 0 && !loadingProjects && (
+                        <SelectItem value="__browse__">
+                          <FolderOpen className="h-4 w-4 mr-2 inline" />
+                          Browse for directory...
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
                   <Button
                     onClick={handleSelectDirectory}
                     variant="outline"
                     size="icon"
                     disabled={isExecuting}
+                    title="Browse for directory"
                   >
                     <FolderOpen className="h-4 w-4" />
                   </Button>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Choose the directory where the feature will be implemented
+                  Choose from recent projects or browse for a directory
                 </p>
               </div>
 
