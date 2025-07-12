@@ -6,6 +6,8 @@ mod claude_binary;
 mod commands;
 mod process;
 
+use commands::github::run_gh_command;
+
 use checkpoint::state::CheckpointState;
 use commands::agents::{
     cleanup_finished_processes, create_agent, delete_agent, execute_agent, execute_feature, export_agent,
@@ -196,6 +198,9 @@ fn main() {
             commands::slash_commands::slash_command_get,
             commands::slash_commands::slash_command_save,
             commands::slash_commands::slash_command_delete,
+            
+            // GitHub Integration
+            commands::github::run_gh_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

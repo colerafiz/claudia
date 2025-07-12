@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Loader2, Bot, FolderCode, Sparkles } from "lucide-react";
+import { Plus, Loader2, Bot, FolderCode, Sparkles, GitBranch } from "lucide-react";
 import { api, type Project, type Session, type ClaudeMdFile } from "@/lib/api";
 import { OutputCacheProvider } from "@/lib/outputCache";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import { ClaudeBinaryDialog } from "@/components/ClaudeBinaryDialog";
 import { Toast, ToastContainer } from "@/components/ui/toast";
 import { ProjectSettings } from '@/components/ProjectSettings';
 import { Feature } from '@/components/Feature';
+import { Issues } from '@/components/Issues';
 
 type View = 
   | "welcome" 
@@ -37,7 +38,8 @@ type View =
   | "mcp"
   | "usage-dashboard"
   | "project-settings"
-  | "feature";
+  | "feature"
+  | "issues";
 
 /**
  * Main App component - Manages the Claude directory browser UI
@@ -273,7 +275,7 @@ function App() {
                   </Card>
                 </motion.div>
                 
-                {/* Test Button */}
+                {/* Issues Card */}
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
@@ -281,11 +283,11 @@ function App() {
                 >
                   <Card 
                     className="h-64 cursor-pointer transition-all duration-200 hover:scale-105 hover:shadow-lg border border-border/50 shimmer-hover trailing-border"
-                    onClick={() => console.log('Test button clicked')}
+                    onClick={() => handleViewChange("issues")}
                   >
                     <div className="h-full flex flex-col items-center justify-center p-8">
-                      <Plus className="h-16 w-16 mb-4 text-primary" />
-                      <h2 className="text-xl font-semibold">Test Button</h2>
+                      <GitBranch className="h-16 w-16 mb-4 text-primary" />
+                      <h2 className="text-xl font-semibold">Issues</h2>
                     </div>
                   </Card>
                 </motion.div>
@@ -482,6 +484,11 @@ function App() {
       case "feature":
         return (
           <Feature onBack={() => handleViewChange("welcome")} />
+        );
+      
+      case "issues":
+        return (
+          <Issues onBack={() => handleViewChange("welcome")} />
         );
       
       default:
