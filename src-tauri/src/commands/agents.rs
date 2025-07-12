@@ -2439,7 +2439,6 @@ pub async fn execute_feature(
             "-p", &issue_prompt,
             "--model", "claude-3-5-sonnet-20241022",
             "--output-format", "stream-json",
-            "--verbose",
             "--dangerously-skip-permissions"
         ])
         .output()
@@ -2506,7 +2505,7 @@ pub async fn execute_feature(
             
             let terminal_script = format!(
                 r#"tell application "Terminal"
-                    do script "cd \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions"
+                    do script "cd \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions"
                     activate
                 end tell"#,
                 escaped_dir,
@@ -2536,7 +2535,7 @@ pub async fn execute_feature(
                     .arg("bash")
                     .arg("-c")
                     .arg(&format!(
-                        "cd '{}' && '{}' -p '{}' --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions; exec bash",
+                        "cd '{}' && '{}' -p '{}' --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions; exec bash",
                         request.directory,
                         claude_cmd,
                         task_prompt
@@ -2561,7 +2560,7 @@ pub async fn execute_feature(
             
             let _ = std::process::Command::new("cmd")
                 .args(&["/c", "start", "cmd", "/k", &format!(
-                    "cd /d \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions",
+                    "cd /d \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --dangerously-skip-permissions",
                     request.directory,
                     claude_cmd,
                     task_prompt
@@ -2581,26 +2580,22 @@ pub async fn execute_feature(
             "run_id": run_id,
             "terminal": true
         }));
-        
-        // Switch back to original branch for next iteration
-        if i < request.agent_count - 1 {
-            let checkout_result = std::process::Command::new("git")
-                .args(&["checkout", &current_branch])
-                .current_dir(&request.directory)
-                .output()
-                .map_err(|e| format!("Failed to switch back to {}: {}", current_branch, e))?;
-            
-            if !checkout_result.status.success() {
-                warn!("Failed to switch back to original branch, continuing anyway");
-            }
-        }
     }
     
+    // Add a small delay to ensure all terminals have started
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
     // Switch back to original branch at the end
-    let _ = std::process::Command::new("git")
+    let checkout_result = std::process::Command::new("git")
         .args(&["checkout", &current_branch])
         .current_dir(&request.directory)
-        .output();
+        .output()
+        .map_err(|e| format!("Failed to switch back to {}: {}", current_branch, e))?;
+    
+    if !checkout_result.status.success() {
+        let stderr = String::from_utf8_lossy(&checkout_result.stderr);
+        warn!("Failed to switch back to original branch: {}", stderr);
+    }
     
     info!("Feature execution started with {} agents in terminal windows", request.agent_count);
     
