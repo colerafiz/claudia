@@ -31,6 +31,7 @@ export function Feature({ onBack }: FeatureProps) {
     status: string;
     message: string;
   } | null>(null);
+  const [expectedAgentCount, setExpectedAgentCount] = useState(0);
 
   const handleSelectDirectory = async () => {
     try {
@@ -53,7 +54,16 @@ export function Feature({ onBack }: FeatureProps) {
       return;
     }
 
+    // Prevent multiple executions
+    if (isExecuting) {
+      return;
+    }
+
     setIsExecuting(true);
+    setRunningAgents([]); // Clear any previous agents
+    setFeatureStatus(null); // Clear any previous status
+    setExpectedAgentCount(agentCount[0]); // Store expected count
+    
     try {
       const result = await invoke<{
         branch_names: string[];
@@ -68,14 +78,15 @@ export function Feature({ onBack }: FeatureProps) {
       
       console.log("Feature execution started:", result);
       
+      // Keep isExecuting true until all agents are done
       // The UI will show the progress
     } catch (error) {
       setFeatureStatus(null);
+      setIsExecuting(false); // Reset on error
       console.error("Failed to execute feature:", error);
       alert(`Failed to execute feature: ${error}`);
-    } finally {
-      setIsExecuting(false);
     }
+    // Don't reset isExecuting here - wait for agents to complete
   };
 
   // Listen for agent events
@@ -93,7 +104,20 @@ export function Feature({ onBack }: FeatureProps) {
         terminal?: boolean;
       }>("feature-agent-started", (event) => {
         console.log("Agent started:", event.payload);
-        setRunningAgents(prev => [...prev, event.payload]);
+        setRunningAgents(prev => {
+          const updated = [...prev, event.payload];
+          
+          // Check if all expected agents have been spawned
+          if (updated.length >= expectedAgentCount && expectedAgentCount > 0) {
+            // All agents spawned, reset execution state after a delay
+            setTimeout(() => {
+              setIsExecuting(false);
+              setExpectedAgentCount(0);
+            }, 2000);
+          }
+          
+          return updated;
+        });
       });
 
       unlistenComplete = await listen<boolean>("agent-complete", (event) => {
@@ -108,6 +132,8 @@ export function Feature({ onBack }: FeatureProps) {
       }>("feature-status", (event) => {
         console.log("Feature status:", event.payload);
         setFeatureStatus(event.payload);
+        
+        // No need to check here anymore since we check in agent-started event
       });
     };
 
@@ -118,7 +144,7 @@ export function Feature({ onBack }: FeatureProps) {
       unlistenComplete?.();
       unlistenStatus?.();
     };
-  }, []);
+  }, [expectedAgentCount]);
 
   return (
     <div className="flex-1 flex flex-col h-full">
@@ -158,11 +184,13 @@ export function Feature({ onBack }: FeatureProps) {
                     onChange={(e) => setDirectory(e.target.value)}
                     placeholder="Select or enter project directory"
                     className="flex-1"
+                    disabled={isExecuting}
                   />
                   <Button
                     onClick={handleSelectDirectory}
                     variant="outline"
                     size="icon"
+                    disabled={isExecuting}
                   >
                     <FolderOpen className="h-4 w-4" />
                   </Button>
@@ -181,6 +209,7 @@ export function Feature({ onBack }: FeatureProps) {
                   onChange={(e) => setTicket(e.target.value)}
                   placeholder="Write a detailed description of the feature you want to implement..."
                   className="min-h-[200px]"
+                  disabled={isExecuting}
                 />
                 <p className="text-sm text-muted-foreground">
                   Be as detailed as possible. This description will be given to each agent.
@@ -198,6 +227,7 @@ export function Feature({ onBack }: FeatureProps) {
                   max={5}
                   step={1}
                   className="w-full"
+                  disabled={isExecuting}
                 />
                 <p className="text-sm text-muted-foreground">
                   Each agent will work independently on a separate branch
@@ -220,7 +250,7 @@ export function Feature({ onBack }: FeatureProps) {
                     >
                       <GitBranch className="h-4 w-4" />
                     </motion.div>
-                    Executing...
+                    Executing Feature...
                   </>
                 ) : (
                   <>
@@ -268,6 +298,30 @@ export function Feature({ onBack }: FeatureProps) {
                   <div>
                     <p className="font-semibold text-sm">{featureStatus.status === 'creating_issue' ? 'Creating GitHub Issue' : 'Issue Created'}</p>
                     <p className="text-xs text-muted-foreground">{featureStatus.message}</p>
+                  </div>
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
+          {/* Execution Status Card */}
+          {isExecuting && runningAgents.length === 0 && !featureStatus && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.15 }}
+            >
+              <Card className="p-4 border-orange-500/50 bg-orange-50/10">
+                <div className="flex items-center gap-2">
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  >
+                    <GitBranch className="h-4 w-4 text-orange-500" />
+                  </motion.div>
+                  <div>
+                    <p className="font-semibold text-sm text-orange-600">Initializing Feature Execution</p>
+                    <p className="text-xs text-muted-foreground">Please wait while we set up your agents...</p>
                   </div>
                 </div>
               </Card>

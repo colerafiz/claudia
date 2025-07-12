@@ -2336,6 +2336,50 @@ pub struct FeatureExecutionResult {
     pub run_ids: Vec<i64>,
 }
 
+/// Helper function to get the actual claude binary path for terminal execution
+fn get_claude_terminal_command(app: &AppHandle, claude_binary: &str) -> String {
+    if claude_binary == "claude-code" {
+        // For development, use the binary from binaries directory
+        if cfg!(debug_assertions) {
+            let binary_name = if cfg!(target_os = "macos") {
+                if cfg!(target_arch = "aarch64") {
+                    "claude-code-aarch64-apple-darwin"
+                } else {
+                    "claude-code-x86_64-apple-darwin"
+                }
+            } else if cfg!(target_os = "linux") {
+                "claude-code-x86_64-unknown-linux-gnu"
+            } else {
+                "claude-code-x86_64-pc-windows-msvc.exe"
+            };
+            
+            let current_dir = std::env::current_dir().unwrap_or_default();
+            let binary_path = current_dir.join("binaries").join(binary_name);
+            if binary_path.exists() {
+                binary_path.to_string_lossy().to_string()
+            } else {
+                // Try src-tauri/binaries as well
+                let alt_path = current_dir.join("src-tauri").join("binaries").join(binary_name);
+                if alt_path.exists() {
+                    alt_path.to_string_lossy().to_string()
+                } else {
+                    "claude".to_string()
+                }
+            }
+        } else {
+            // For production, use the bundled binary
+            if let Ok(exe_path) = app.path().resource_dir() {
+                let sidecar_path = exe_path.join("claude-code");
+                sidecar_path.to_string_lossy().to_string()
+            } else {
+                "claude".to_string()
+            }
+        }
+    } else {
+        claude_binary.to_string()
+    }
+}
+
 /// Execute a feature with multiple agents working in parallel
 #[tauri::command]
 pub async fn execute_feature(
@@ -2385,22 +2429,33 @@ pub async fn execute_feature(
     // Find Claude binary
     let claude_binary = find_claude_binary(&app)?;
     
+    // For GitHub issue creation, use the terminal command path directly
+    let claude_cmd_for_issue = get_claude_terminal_command(&app, &claude_binary);
+    
     // Run Claude to create GitHub issue
-    let issue_output = Command::new(&claude_binary)
+    let output = Command::new(&claude_cmd_for_issue)
         .current_dir(&request.directory)
         .args(&[
-            "code",
-            "--task", &issue_prompt,
+            "-p", &issue_prompt,
             "--model", "claude-3-5-sonnet-20241022",
-            "--headless"
+            "--output-format", "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions"
         ])
         .output()
         .await
         .map_err(|e| format!("Failed to create GitHub issue: {}", e))?;
     
-    if !issue_output.status.success() {
-        let stderr = String::from_utf8_lossy(&issue_output.stderr);
+    let issue_success = if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         warn!("GitHub issue creation may have failed: {}", stderr);
+        false
+    } else {
+        true
+    };
+    
+    if !issue_success {
+        warn!("GitHub issue creation may have failed");
     }
     
     let _ = app.emit("feature-status", serde_json::json!({
@@ -2441,13 +2496,22 @@ pub async fn execute_feature(
         // Open terminal window with Claude
         #[cfg(target_os = "macos")]
         {
+            // Use the actual claude binary path for terminal commands
+            let claude_cmd = get_claude_terminal_command(&app, &claude_binary);
+            
+            // Properly escape for AppleScript
+            let escaped_dir = request.directory.replace("\\", "\\\\").replace("\"", "\\\"");
+            let escaped_cmd = claude_cmd.replace("\\", "\\\\").replace("\"", "\\\"");
+            let escaped_task = task_prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ");
+            
             let terminal_script = format!(
                 r#"tell application "Terminal"
-                    do script "cd '{}' && claude code --dangerously-skip-permissions --task '{}' --model claude-3-5-sonnet-20241022"
+                    do script "cd \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions"
                     activate
                 end tell"#,
-                request.directory.replace("'", "\\'"),
-                task_prompt.replace("'", "\\'").replace("\n", "\\n")
+                escaped_dir,
+                escaped_cmd,
+                escaped_task
             );
             
             let _ = std::process::Command::new("osascript")
@@ -2459,6 +2523,9 @@ pub async fn execute_feature(
         
         #[cfg(target_os = "linux")]
         {
+            // Use the actual claude binary path for terminal commands
+            let claude_cmd = get_claude_terminal_command(&app, &claude_binary);
+            
             // Try common terminal emulators
             let terminals = ["gnome-terminal", "konsole", "xterm", "terminator"];
             let mut spawned = false;
@@ -2469,8 +2536,9 @@ pub async fn execute_feature(
                     .arg("bash")
                     .arg("-c")
                     .arg(&format!(
-                        "cd '{}' && claude code --dangerously-skip-permissions --task '{}' --model claude-3-5-sonnet-20241022; exec bash",
+                        "cd '{}' && '{}' -p '{}' --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions; exec bash",
                         request.directory,
+                        claude_cmd,
                         task_prompt
                     ))
                     .spawn();
@@ -2488,10 +2556,14 @@ pub async fn execute_feature(
         
         #[cfg(target_os = "windows")]
         {
+            // Use the actual claude binary path for terminal commands
+            let claude_cmd = get_claude_terminal_command(&app, &claude_binary);
+            
             let _ = std::process::Command::new("cmd")
                 .args(&["/c", "start", "cmd", "/k", &format!(
-                    "cd /d \"{}\" && claude code --dangerously-skip-permissions --task \"{}\" --model claude-3-5-sonnet-20241022",
+                    "cd /d \"{}\" && \"{}\" -p \"{}\" --model claude-3-5-sonnet-20241022 --output-format stream-json --verbose --dangerously-skip-permissions",
                     request.directory,
+                    claude_cmd,
                     task_prompt
                 )])
                 .spawn()
