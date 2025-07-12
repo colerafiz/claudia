@@ -2320,3 +2320,220 @@ pub async fn load_agent_session_history(
         Err(format!("Session file not found: {}", session_id))
     }
 }
+
+/// Structure for feature execution request
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeatureExecutionRequest {
+    pub directory: String,
+    pub ticket: String,
+    pub agent_count: i32,
+}
+
+/// Structure for feature execution result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeatureExecutionResult {
+    pub branch_names: Vec<String>,
+    pub run_ids: Vec<i64>,
+}
+
+/// Execute a feature with multiple agents working in parallel
+#[tauri::command]
+pub async fn execute_feature(
+    app: AppHandle,
+    request: FeatureExecutionRequest,
+    _registry: State<'_, crate::process::ProcessRegistryState>,
+) -> Result<FeatureExecutionResult, String> {
+    info!("Executing feature with {} agents", request.agent_count);
+    info!("Directory: {}", request.directory);
+    info!("Ticket: {}", request.ticket);
+    
+    // Validate that the directory is a git repository
+    let git_dir = std::path::Path::new(&request.directory).join(".git");
+    if !git_dir.exists() {
+        return Err("Selected directory is not a git repository".to_string());
+    }
+    
+    // Get current branch name
+    let current_branch_output = std::process::Command::new("git")
+        .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&request.directory)
+        .output()
+        .map_err(|e| format!("Failed to get current branch: {}", e))?;
+    
+    let current_branch = String::from_utf8_lossy(&current_branch_output.stdout).trim().to_string();
+    info!("Current branch: {}", current_branch);
+    
+    // First, create a GitHub issue with implementation plan using Claude
+    let _ = app.emit("feature-status", serde_json::json!({
+        "status": "creating_issue",
+        "message": "Creating GitHub issue with implementation plan..."
+    }));
+    
+    // Create a prompt for generating the GitHub issue
+    let issue_prompt = format!(
+        "Create a detailed GitHub issue for this feature request. Include:\n\
+        1. Clear title\n\
+        2. Description of the feature\n\
+        3. Implementation approach\n\
+        4. Technical considerations\n\
+        5. Acceptance criteria\n\n\
+        Feature request: {}\n\n\
+        After creating the issue content, use the GitHub CLI (gh) to create the issue in the repository.",
+        request.ticket
+    );
+    
+    // Find Claude binary
+    let claude_binary = find_claude_binary(&app)?;
+    
+    // Run Claude to create GitHub issue
+    let issue_output = Command::new(&claude_binary)
+        .current_dir(&request.directory)
+        .args(&[
+            "code",
+            "--task", &issue_prompt,
+            "--model", "claude-3-5-sonnet-20241022",
+            "--headless"
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to create GitHub issue: {}", e))?;
+    
+    if !issue_output.status.success() {
+        let stderr = String::from_utf8_lossy(&issue_output.stderr);
+        warn!("GitHub issue creation may have failed: {}", stderr);
+    }
+    
+    let _ = app.emit("feature-status", serde_json::json!({
+        "status": "issue_created",
+        "message": "GitHub issue created. Preparing to spawn agents..."
+    }));
+    
+    let mut branch_names = Vec::new();
+    let mut run_ids = Vec::new();
+    
+    // Create branches and spawn terminal windows with Claude
+    for i in 0..request.agent_count {
+        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let branch_name = format!("feature-agent-{}-{}", i + 1, timestamp);
+        
+        // Create and checkout new branch
+        let create_branch_result = std::process::Command::new("git")
+            .args(&["checkout", "-b", &branch_name])
+            .current_dir(&request.directory)
+            .output()
+            .map_err(|e| format!("Failed to create branch {}: {}", branch_name, e))?;
+        
+        if !create_branch_result.status.success() {
+            let stderr = String::from_utf8_lossy(&create_branch_result.stderr);
+            return Err(format!("Failed to create branch {}: {}", branch_name, stderr));
+        }
+        
+        info!("Created branch: {}", branch_name);
+        branch_names.push(branch_name.clone());
+        
+        // Prepare the task for this agent
+        let task_prompt = format!(
+            "You are working on branch '{}'. {}\\n\\nIMPORTANT: Do not switch branches. Work only on the current branch. When you have completed the implementation, create a pull request to merge your branch into the main branch.",
+            branch_name,
+            request.ticket
+        );
+        
+        // Open terminal window with Claude
+        #[cfg(target_os = "macos")]
+        {
+            let terminal_script = format!(
+                r#"tell application "Terminal"
+                    do script "cd '{}' && claude code --dangerously-skip-permissions --task '{}' --model claude-3-5-sonnet-20241022"
+                    activate
+                end tell"#,
+                request.directory.replace("'", "\\'"),
+                task_prompt.replace("'", "\\'").replace("\n", "\\n")
+            );
+            
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&terminal_script)
+                .spawn()
+                .map_err(|e| format!("Failed to open terminal for agent {}: {}", i + 1, e))?;
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
+            // Try common terminal emulators
+            let terminals = ["gnome-terminal", "konsole", "xterm", "terminator"];
+            let mut spawned = false;
+            
+            for terminal in &terminals {
+                let result = std::process::Command::new(terminal)
+                    .arg("--")
+                    .arg("bash")
+                    .arg("-c")
+                    .arg(&format!(
+                        "cd '{}' && claude code --dangerously-skip-permissions --task '{}' --model claude-3-5-sonnet-20241022; exec bash",
+                        request.directory,
+                        task_prompt
+                    ))
+                    .spawn();
+                
+                if result.is_ok() {
+                    spawned = true;
+                    break;
+                }
+            }
+            
+            if !spawned {
+                return Err(format!("Failed to open terminal for agent {}", i + 1));
+            }
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("cmd")
+                .args(&["/c", "start", "cmd", "/k", &format!(
+                    "cd /d \"{}\" && claude code --dangerously-skip-permissions --task \"{}\" --model claude-3-5-sonnet-20241022",
+                    request.directory,
+                    task_prompt
+                )])
+                .spawn()
+                .map_err(|e| format!("Failed to open terminal for agent {}: {}", i + 1, e))?;
+        }
+        
+        // Simple ID generation
+        let run_id = (i as i64) + 1000;
+        run_ids.push(run_id);
+        
+        // Emit start event
+        let _ = app.emit("feature-agent-started", serde_json::json!({
+            "agent_index": i + 1,
+            "branch_name": branch_name,
+            "run_id": run_id,
+            "terminal": true
+        }));
+        
+        // Switch back to original branch for next iteration
+        if i < request.agent_count - 1 {
+            let checkout_result = std::process::Command::new("git")
+                .args(&["checkout", &current_branch])
+                .current_dir(&request.directory)
+                .output()
+                .map_err(|e| format!("Failed to switch back to {}: {}", current_branch, e))?;
+            
+            if !checkout_result.status.success() {
+                warn!("Failed to switch back to original branch, continuing anyway");
+            }
+        }
+    }
+    
+    // Switch back to original branch at the end
+    let _ = std::process::Command::new("git")
+        .args(&["checkout", &current_branch])
+        .current_dir(&request.directory)
+        .output();
+    
+    info!("Feature execution started with {} agents in terminal windows", request.agent_count);
+    
+    Ok(FeatureExecutionResult {
+        branch_names,
+        run_ids,
+    })
+}

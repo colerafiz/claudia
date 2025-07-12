@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Loader2, Bot, FolderCode } from "lucide-react";
+import { Plus, Loader2, Bot, FolderCode, Sparkles } from "lucide-react";
 import { api, type Project, type Session, type ClaudeMdFile } from "@/lib/api";
 import { OutputCacheProvider } from "@/lib/outputCache";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { NFOCredits } from "@/components/NFOCredits";
 import { ClaudeBinaryDialog } from "@/components/ClaudeBinaryDialog";
 import { Toast, ToastContainer } from "@/components/ui/toast";
 import { ProjectSettings } from '@/components/ProjectSettings';
+import { Feature } from '@/components/Feature';
 
 type View = 
   | "welcome" 
@@ -35,7 +36,8 @@ type View =
   | "agent-run-view"
   | "mcp"
   | "usage-dashboard"
-  | "project-settings";
+  | "project-settings"
+  | "feature";
 
 /**
  * Main App component - Manages the Claude directory browser UI
@@ -219,7 +221,7 @@ function App() {
               </motion.div>
 
               {/* Navigation Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl mx-auto">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl mx-auto">
                 {/* CC Agents Card */}
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -250,6 +252,23 @@ function App() {
                     <div className="h-full flex flex-col items-center justify-center p-8">
                       <FolderCode className="h-16 w-16 mb-4 text-primary" />
                       <h2 className="text-xl font-semibold">CC Projects</h2>
+                    </div>
+                  </Card>
+                </motion.div>
+
+                {/* Feature Card */}
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: 0.5, delay: 0.3 }}
+                >
+                  <Card 
+                    className="h-64 cursor-pointer transition-all duration-200 hover:scale-105 hover:shadow-lg border border-border/50 shimmer-hover trailing-border"
+                    onClick={() => handleViewChange("feature")}
+                  >
+                    <div className="h-full flex flex-col items-center justify-center p-8">
+                      <Sparkles className="h-16 w-16 mb-4 text-primary" />
+                      <h2 className="text-xl font-semibold">Feature</h2>
                     </div>
                   </Card>
                 </motion.div>
@@ -442,6 +461,11 @@ function App() {
           );
         }
         break;
+      
+      case "feature":
+        return (
+          <Feature onBack={() => handleViewChange("welcome")} />
+        );
       
       default:
         return null;
